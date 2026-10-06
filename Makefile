@@ -1,4 +1,4 @@
-.PHONY: help build run test clean docker-up docker-down migrate-up migrate-down seed
+.PHONY: help build run test test-coverage lint clean docker-up docker-down docker-logs docker-app docker-app-logs docker-shell docker-rebuild migrate-up migrate-down seed setup dev deps tenant-setup setup-master
 
 help: ## Mostra esta ajuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -19,6 +19,9 @@ test-coverage: ## Executa os testes com coverage
 	@echo "Executando testes com coverage..."
 	@go test -v -coverprofile=coverage.out ./...
 	@go tool cover -html=coverage.out -o coverage.html
+
+lint: ## Executa golangci-lint (mesma config do CI)
+	@golangci-lint run ./...
 
 clean: ## Remove arquivos compilados
 	@echo "Limpando..."
@@ -42,13 +45,6 @@ docker-app: ## Sobe banco E aplicação no Docker
 	@echo "Aguardando banco inicializar..."
 	@sleep 5
 	@echo "✅ Aplicação rodando em http://localhost:8080"
-
-docker-dev: ## Sube ambiente de desenvolvimento com hot reload
-	@echo "Subindo ambiente de desenvolvimento..."
-	@docker-compose -f docker-compose.dev.yml up -d
-	@echo "Aguardando banco inicializar..."
-	@sleep 5
-	@echo "✅ Aplicação com hot reload em http://localhost:8080"
 
 docker-app-logs: ## Mostra logs da aplicação no Docker
 	@docker-compose logs -f app
@@ -80,13 +76,6 @@ dev: docker-up ## Ambiente de desenvolvimento completo (Go local)
 	@make migrate-up
 	@make seed
 	@make run
-
-dev-docker: docker-dev ## Ambiente completo no Docker com hot reload
-	@echo "Aguardando inicialização..."
-	@sleep 5
-	@docker-compose -f docker-compose.dev.yml exec app go run cmd/migrate/main.go up
-	@docker-compose -f docker-compose.dev.yml exec app go run cmd/seed/main.go
-	@echo "✅ Ambiente pronto! Acesse http://localhost:8080"
 
 deps: ## Instala as dependências
 	@echo "Instalando dependências..."
