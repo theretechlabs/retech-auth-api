@@ -84,6 +84,7 @@ prioridade.
 
 | # | Item | Onde | Risco |
 | --- | --- | --- | --- |
+| 0 | **Dependências vulneráveis.** `govulncheck` acusa [GO-2025-3553](https://pkg.go.dev/vuln/GO-2025-3553) em `github.com/golang-jwt/jwt/v5@v5.2.0` (alocação excessiva de memória ao parsear header; fix em v5.2.2), alcançável a partir de `ValidateToken`. Além disso há 10 vulnerabilidades em pacotes importados e 22 em módulos requeridos (gin v1.9.1, x/net, x/crypto etc.) que o código não parece chamar. Abrir PR dedicada de `go get -u` + `go mod tidy` e, só então, remover o `continue-on-error` do job `govulncheck` em `.github/workflows/ci.yml`. | `go.mod`, `internal/application/service/jwt_service.go` | Alto |
 | 1 | JWT sem claims `typ`, `iss`, `aud` e `jti`. Sem `iss`/`aud` qualquer token RS256 válido da mesma chave serve em qualquer consumidor; sem `jti` não há como revogar individualmente. | `internal/application/service/jwt_service.go` | Alto |
 | 2 | Access token e refresh token são intercambiáveis: mesma struct `Claims`, mesma chave, nenhum marcador de tipo. Um refresh token (7 dias) é aceito pelo `AuthMiddleware` como access token, e vice-versa. | `jwt_service.go`, `internal/infrastructure/http/middleware/auth_middleware.go`, `internal/application/usecase/refresh_token_usecase.go` | Alto |
 | 3 | Não existe logout nem revogação de tokens (nem por `jti`, nem por `user.version` no refresh). | `cmd/api/main.go`, `refresh_token_usecase.go` | Alto |
