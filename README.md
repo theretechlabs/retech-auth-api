@@ -32,11 +32,11 @@ Com a API em execução:
 ## Configuração
 
 ```bash
-cp env.example .env
+cp .env.example .env
 # Ajuste BOOTSTRAP_SECRET, senhas de banco e demais variáveis.
 ```
 
-Variáveis obrigatórias estão descritas em [`env.example`](env.example). O bootstrap HMAC de `/applications/sync` usa `BOOTSTRAP_SECRET` no servidor; ferramentas cliente podem expor o mesmo valor como `RETECHAUTH_BOOTSTRAP_SECRET`.
+Variáveis obrigatórias estão descritas em [`.env.example`](.env.example). O bootstrap HMAC de `/applications/sync` usa `BOOTSTRAP_SECRET` no servidor; ferramentas cliente podem expor o mesmo valor como `RETECHAUTH_BOOTSTRAP_SECRET`.
 
 ## Início rápido (banco no Docker, API local)
 
@@ -45,12 +45,6 @@ make docker-up    # sobe só o PostgreSQL
 make migrate-up
 make seed
 make run
-```
-
-Stack completa com hot reload:
-
-```bash
-make dev-docker
 ```
 
 ## Comandos Make úteis
@@ -94,7 +88,7 @@ go test ./...
 
 ## Docker de produção
 
-Imagem multi-stage em [`Dockerfile`](Dockerfile). Em runtime, injete todas as variáveis obrigatórias (equivalente a `env.example`) e monte um volume persistente para `JWT_RSA_KEYS_DIR` se necessário.
+Imagem multi-stage em [`Dockerfile`](Dockerfile). Em runtime, injete todas as variáveis obrigatórias (equivalente a `.env.example`) e monte um volume persistente para `JWT_RSA_KEYS_DIR` se necessário.
 
 ---
 

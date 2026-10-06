@@ -158,9 +158,9 @@ func validateRequiredEnvs() error {
 		return fmt.Errorf(
 			"❌ Variáveis de ambiente obrigatórias não encontradas:\n  - %s\n\n"+
 				"💡 Solução:\n"+
-				"  - Desenvolvimento: copie env.example para .env ou use 'make dev-docker'\n"+
+				"  - Desenvolvimento: copie .env.example para .env ou use 'make dev'\n"+
 				"  - Produção: Configure todas as variáveis no Railway\n"+
-				"  - Detalhes: copie env.example para .env e ajuste os valores",
+				"  - Detalhes: copie .env.example para .env e ajuste os valores",
 			strings.Join(missing, "\n  - "),
 		)
 	}
@@ -217,14 +217,6 @@ func (c *Config) GetDSN() string {
 		c.Database.DBName,
 		c.Database.SSLMode,
 	)
-}
-
-// getEnv obtém uma variável de ambiente ou retorna um valor padrão
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
 }
 
 // getEnvRequired obtém uma variável de ambiente obrigatória
