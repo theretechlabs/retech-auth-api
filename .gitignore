@@ -1,0 +1,50 @@
+# ==============================================
+# Segredos e credenciais — NUNCA versionar
+# ==============================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+keys/*
+!keys/.gitkeep
+!keys/README.md
+
+# ==============================================
+# Go
+# ==============================================
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+/retech-auth-api
+/api
+/migrate
+/seed
+vendor/
+
+# ==============================================
+# Node (ferramentas auxiliares, ex.: mcp/postgres)
+# ==============================================
+node_modules/
+npm-debug.log*
+
+# ==============================================
+# IDEs e sistema operacional
+# ==============================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

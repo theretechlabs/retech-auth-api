@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	_ "github.com/lib/pq"
+	_ "github.com/lib/pq" // driver PostgreSQL registrado via side effect
 )
 
 //go:embed migrations/*.sql
@@ -153,7 +153,7 @@ func (m *Migrator) Up() error {
 		}
 
 		if _, err := tx.Exec(migration.Up); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("erro ao executar migration %03d_%s: %w", migration.Version, migration.Name, err)
 		}
 
@@ -163,7 +163,7 @@ func (m *Migrator) Up() error {
 			migration.Name,
 		)
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("erro ao registrar migration %03d_%s: %w", migration.Version, migration.Name, err)
 		}
 
@@ -211,13 +211,13 @@ func (m *Migrator) Down(version int) error {
 		}
 
 		if _, err := tx.Exec(migration.Down); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("erro ao reverter migration %03d_%s: %w", migration.Version, migration.Name, err)
 		}
 
 		_, err = tx.Exec("DELETE FROM schema_migrations WHERE version = $1", migration.Version)
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("erro ao remover registro da migration %03d_%s: %w", migration.Version, migration.Name, err)
 		}
 

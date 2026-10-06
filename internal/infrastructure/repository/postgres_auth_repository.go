@@ -441,7 +441,7 @@ func (r *postgresAuthRepository) UpdateUserRoles(ctx context.Context, userApplic
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Desativa todas as roles atuais
 	_, err = tx.ExecContext(ctx, `
@@ -589,7 +589,7 @@ func (r *postgresAuthRepository) UpsertRolePermissions(ctx context.Context, role
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Remove todos os vínculos atuais da role
 	_, err = tx.ExecContext(ctx, `

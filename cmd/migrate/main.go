@@ -44,14 +44,14 @@ func main() {
 
 	switch os.Args[1] {
 	case "up":
-		upCmd.Parse(os.Args[2:])
+		_ = upCmd.Parse(os.Args[2:])
 		if err := migrator.Up(); err != nil {
 			log.Fatalf("Erro ao executar migrations: %v", err)
 		}
 		log.Println("✅ Migrations executadas com sucesso!")
 
 	case "down":
-		downCmd.Parse(os.Args[2:])
+		_ = downCmd.Parse(os.Args[2:])
 		version := *downVersion
 		if len(downCmd.Args()) > 0 {
 			v, err := strconv.Atoi(downCmd.Args()[0])
@@ -65,7 +65,7 @@ func main() {
 		log.Println("✅ Migrations revertidas com sucesso!")
 
 	case "status":
-		statusCmd.Parse(os.Args[2:])
+		_ = statusCmd.Parse(os.Args[2:])
 		if err := migrator.Status(); err != nil {
 			log.Fatalf("Erro ao verificar status: %v", err)
 		}
