@@ -13,6 +13,12 @@ updates:
     labels:
       - dependencies
       - go
+    # Uma PR por semana com todos os bumps minor/patch (em vez de uma por pacote,
+    # que conflitam entre si a cada merge). Major continua em PR própria.
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -26,3 +32,6 @@ updates:
     labels:
       - dependencies
       - github-actions
+    groups:
+      actions:
+        patterns: ["*"]
