@@ -127,9 +127,10 @@ func main() {
 	// Inicializa serviço JWT com chaves RSA
 	jwtService := service.NewJWTService(
 		rsaKeyService,
-		cfg.JWT.ExpirationHours,
-		cfg.JWT.RefreshExpirationHours,
+		cfg.JWT.AccessTokenTTL(),
+		cfg.JWT.RefreshTokenTTL(),
 	)
+	log.Printf("⏱️ Validade dos tokens: access=%s refresh=%s", cfg.JWT.AccessTokenTTL(), cfg.JWT.RefreshTokenTTL())
 
 	authenticateUseCase := usecase.NewAuthenticateUseCase(authRepo, hashService, jwtService)
 	refreshTokenUseCase := usecase.NewRefreshTokenUseCase(userRepo, authRepo, jwtService)

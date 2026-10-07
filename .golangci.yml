@@ -84,6 +84,7 @@ linters:
         - individuais
         - inferir
         - calcular
+        - validade
 
   exclusions:
     generated: lax

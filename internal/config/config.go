@@ -6,17 +6,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 // Config armazena todas as configurações da aplicação
 type Config struct {
-	Server         ServerConfig
-	Database       DatabaseConfig
-	JWT            JWTConfig
-	CORS           CORSConfig
-	Docs           DocsConfig
+	Server          ServerConfig
+	Database        DatabaseConfig
+	JWT             JWTConfig
+	CORS            CORSConfig
+	Docs            DocsConfig
 	BootstrapSecret string
 }
 
@@ -40,7 +41,23 @@ type DatabaseConfig struct {
 type JWTConfig struct {
 	RSAKeysDir             string // Diretório para armazenar chaves RSA
 	ExpirationHours        int
+	ExpirationMinutes      int // opcional (JWT_EXPIRATION_MINUTES); > 0 prevalece sobre ExpirationHours
 	RefreshExpirationHours int
+}
+
+// AccessTokenTTL é a validade do access token. Consumidores que renovam
+// server-side (gateways de sessão do CashFlowfy e do MeuFin) permitem tokens
+// curtos (15 min): um JWT vazado vale pouco.
+func (j JWTConfig) AccessTokenTTL() time.Duration {
+	if j.ExpirationMinutes > 0 {
+		return time.Duration(j.ExpirationMinutes) * time.Minute
+	}
+	return time.Duration(j.ExpirationHours) * time.Hour
+}
+
+// RefreshTokenTTL é a validade do refresh token.
+func (j JWTConfig) RefreshTokenTTL() time.Duration {
+	return time.Duration(j.RefreshExpirationHours) * time.Hour
 }
 
 // CORSConfig armazena as configurações do CORS
@@ -90,6 +107,7 @@ func Load() (*Config, error) {
 		JWT: JWTConfig{
 			RSAKeysDir:             getEnvRequired("JWT_RSA_KEYS_DIR"),
 			ExpirationHours:        getEnvAsIntRequired("JWT_EXPIRATION_HOURS"),
+			ExpirationMinutes:      getEnvAsIntOptional("JWT_EXPIRATION_MINUTES", 0),
 			RefreshExpirationHours: getEnvAsIntRequired("JWT_REFRESH_EXPIRATION_HOURS"),
 		},
 		CORS: CORSConfig{
@@ -193,9 +211,12 @@ func (c *Config) Validate() error {
 	if c.JWT.RefreshExpirationHours < 1 {
 		return fmt.Errorf("JWT_REFRESH_EXPIRATION_HOURS deve ser >= 1 (atual: %d)", c.JWT.RefreshExpirationHours)
 	}
-	if c.JWT.RefreshExpirationHours <= c.JWT.ExpirationHours {
-		return fmt.Errorf("JWT_REFRESH_EXPIRATION_HOURS (%d) deve ser maior que JWT_EXPIRATION_HOURS (%d)",
-			c.JWT.RefreshExpirationHours, c.JWT.ExpirationHours)
+	if c.JWT.ExpirationMinutes < 0 {
+		return fmt.Errorf("JWT_EXPIRATION_MINUTES deve ser >= 0 (atual: %d)", c.JWT.ExpirationMinutes)
+	}
+	if c.JWT.RefreshTokenTTL() <= c.JWT.AccessTokenTTL() {
+		return fmt.Errorf("JWT_REFRESH_EXPIRATION_HOURS (%dh) deve ser maior que a validade do access token (%s)",
+			c.JWT.RefreshExpirationHours, c.JWT.AccessTokenTTL())
 	}
 
 	// Valida SSL em produção
@@ -232,6 +253,19 @@ func getEnvRequired(key string) string {
 // getEnvAsIntRequired obtém uma variável de ambiente obrigatória como int
 func getEnvAsIntRequired(key string) int {
 	valueStr := getEnvRequired(key)
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		panic(fmt.Sprintf("Variável %s deve ser um número inteiro (atual: %s)", key, valueStr))
+	}
+	return value
+}
+
+// getEnvAsIntOptional obtém uma variável opcional como int (default se ausente/vazia).
+func getEnvAsIntOptional(key string, def int) int {
+	valueStr := strings.TrimSpace(os.Getenv(key))
+	if valueStr == "" {
+		return def
+	}
 	value, err := strconv.Atoi(valueStr)
 	if err != nil {
 		panic(fmt.Sprintf("Variável %s deve ser um número inteiro (atual: %s)", key, valueStr))
