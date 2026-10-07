@@ -71,11 +71,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: golang/govulncheck-action@v1
-        # Não bloqueia o merge por enquanto: o scan acusa GO-2025-3553 em
-        # golang-jwt/jwt/v5 v5.2.0 (fix em v5.2.2) e o bump de dependências
-        # ficou para PR dedicada (ver SECURITY.md, item 0). Remover esta
-        # linha assim que as dependências forem atualizadas.
-        continue-on-error: true
         with:
           go-version-file: go.mod
           go-package: ./...
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # O Railway builda pelo Dockerfile, não pelo setup-go. Garante que a imagem
+      # do builder acompanha a diretiva `go` do go.mod (quebrou em 2026-10-07).
+      - run: docker build -t retech-auth-api:ci .
