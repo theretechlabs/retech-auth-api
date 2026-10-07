@@ -17,14 +17,14 @@ var (
 // Claims representa as claims do JWT
 type Claims struct {
 	// Sub (Subject) - padrão JWT para identificar o usuário
-	Sub           string     `json:"sub"`           // user_id como string (padrão JWT)
-	UserID        uuid.UUID  `json:"user_id"`       // Mantido para compatibilidade
-	Email         string     `json:"email"`
-	Name          string     `json:"name,omitempty"` // Nome do usuário (para desnormalização controlada em auditoria)
-	ApplicationID uuid.UUID  `json:"application_id"`
-	TenantID      *string    `json:"tenant_id,omitempty"` // ID da unidade (tenant). Carregado do banco e incluído no token.
-	Roles         []string   `json:"roles,omitempty"`     // Array de role codes (ex: ["master", "core_admin"]). Usado para autorização e multi-tenancy hierárquico.
-	Perms         []string   `json:"perms,omitempty"`     // Codes das permissions efetivas ("subject:action"; master = ["all:manage"]). Permite enforcement stateless nas APIs de recurso.
+	Sub           string    `json:"sub"`     // user_id como string (padrão JWT)
+	UserID        uuid.UUID `json:"user_id"` // Mantido para compatibilidade
+	Email         string    `json:"email"`
+	Name          string    `json:"name,omitempty"` // Nome do usuário (para desnormalização controlada em auditoria)
+	ApplicationID uuid.UUID `json:"application_id"`
+	TenantID      *string   `json:"tenant_id,omitempty"` // ID da unidade (tenant). Carregado do banco e incluído no token.
+	Roles         []string  `json:"roles,omitempty"`     // Array de role codes (ex: ["master", "core_admin"]). Usado para autorização e multi-tenancy hierárquico.
+	Perms         []string  `json:"perms,omitempty"`     // Codes das permissions efetivas ("subject:action"; master = ["all:manage"]). Permite enforcement stateless nas APIs de recurso.
 	jwt.RegisteredClaims
 }
 
@@ -38,17 +38,18 @@ type JWTService interface {
 }
 
 type jwtService struct {
-	rsaKeyService           RSAKeyService
-	expirationHours        int
-	refreshExpirationHours int
+	rsaKeyService RSAKeyService
+	accessTTL     time.Duration
+	refreshTTL    time.Duration
 }
 
-// NewJWTService cria uma nova instância de JWTService usando chaves RSA
-func NewJWTService(rsaKeyService RSAKeyService, expirationHours, refreshExpirationHours int) JWTService {
+// NewJWTService cria uma nova instância de JWTService usando chaves RSA.
+// accessTTL/refreshTTL são as validades dos tokens (ver JWTConfig.AccessTokenTTL).
+func NewJWTService(rsaKeyService RSAKeyService, accessTTL, refreshTTL time.Duration) JWTService {
 	return &jwtService{
-		rsaKeyService:           rsaKeyService,
-		expirationHours:        expirationHours,
-		refreshExpirationHours: refreshExpirationHours,
+		rsaKeyService: rsaKeyService,
+		accessTTL:     accessTTL,
+		refreshTTL:    refreshTTL,
 	}
 }
 
@@ -57,7 +58,7 @@ func NewJWTService(rsaKeyService RSAKeyService, expirationHours, refreshExpirati
 // enforcement stateless nas APIs de recurso; o refresh token não os carrega
 // (são recalculados a cada refresh).
 func (s *jwtService) GenerateAccessToken(userID, applicationID uuid.UUID, email, name string, tenantID *string, roles, perms []string) (string, error) {
-	expirationTime := time.Now().Add(time.Duration(s.expirationHours) * time.Hour)
+	expirationTime := time.Now().Add(s.accessTTL)
 	kid := s.rsaKeyService.GetCurrentKeyID()
 
 	claims := &Claims{
@@ -84,16 +85,16 @@ func (s *jwtService) GenerateAccessToken(userID, applicationID uuid.UUID, email,
 
 	// Cria token com RS256
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	
+
 	// Adiciona kid no header
 	token.Header["kid"] = kid
-	
+
 	return token.SignedString(privateKey)
 }
 
 // GenerateRefreshToken gera um token de renovação usando RS256
 func (s *jwtService) GenerateRefreshToken(userID, applicationID uuid.UUID, email, name string, tenantID *string, roles []string) (string, error) {
-	expirationTime := time.Now().Add(time.Duration(s.refreshExpirationHours) * time.Hour)
+	expirationTime := time.Now().Add(s.refreshTTL)
 	kid := s.rsaKeyService.GetCurrentKeyID()
 
 	claims := &Claims{
@@ -119,10 +120,10 @@ func (s *jwtService) GenerateRefreshToken(userID, applicationID uuid.UUID, email
 
 	// Cria token com RS256
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	
+
 	// Adiciona kid no header
 	token.Header["kid"] = kid
-	
+
 	return token.SignedString(privateKey)
 }
 
@@ -171,7 +172,7 @@ func (s *jwtService) ValidateToken(tokenString string) (*Claims, error) {
 
 // GetExpirationTime retorna o tempo de expiração em segundos
 func (s *jwtService) GetExpirationTime() int {
-	return s.expirationHours * 3600
+	return int(s.accessTTL.Seconds())
 }
 
 // GetJWKS retorna o JSON Web Key Set (JWKS) com chaves públicas RSA
@@ -187,4 +188,3 @@ func (s *jwtService) GetJWKS() (map[string]interface{}, error) {
 		"keys": jwks,
 	}, nil
 }
-

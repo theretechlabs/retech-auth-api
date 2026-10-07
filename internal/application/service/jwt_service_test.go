@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -19,7 +20,7 @@ func newTestJWTService(t *testing.T) (JWTService, RSAKeyService) {
 		t.Fatalf("erro ao criar RSAKeyService: %v", err)
 	}
 
-	return NewJWTService(rsaSvc, 1, 2), rsaSvc
+	return NewJWTService(rsaSvc, time.Hour, 2*time.Hour), rsaSvc
 }
 
 func TestJWTService_RoundTripAccessToken(t *testing.T) {
