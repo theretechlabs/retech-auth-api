@@ -76,7 +76,12 @@ e versão/commit afetado. Respondemos em até 5 dias úteis e combinamos prazo d
 divulgação coordenada. Se precisar de canal cifrado, solicite a chave PGP na
 primeira mensagem.
 
-## 3. Backlog de hardening conhecido
+## 3. Chaves de assinatura JWT
+
+Como a chave RSA é gerada, armazenada (volume em `/app/keys`) e o roadmap de rotação/backup/KMS:
+[`docs/roadmap-chaves-jwt.md`](docs/roadmap-chaves-jwt.md).
+
+## 4. Backlog de hardening conhecido
 
 Itens identificados em revisão e **não corrigidos** nesta PR (que se limitou a
 higiene de repositório e CI, sem alterar comportamento). Ordem aproximada de
