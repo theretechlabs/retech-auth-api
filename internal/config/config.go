@@ -20,9 +20,6 @@ type Config struct {
 	Docs            DocsConfig
 	RateLimit       RateLimitConfig
 	BootstrapSecret string
-	// HMACRequireNonce exige X-Nonce nas rotas internas (HMAC_REQUIRE_NONCE).
-	// false = transição (clientes sem nonce ainda passam).
-	HMACRequireNonce bool
 }
 
 // RateLimitConfig: eventos por minuto por chave (0 = desligado). Em memória,
@@ -147,8 +144,7 @@ func Load() (*Config, error) {
 			HeroSupportURL:   getEnvRequired("DOCS_HERO_SUPPORT_URL"),
 			HeroLicense:      getEnvRequired("DOCS_HERO_LICENSE"),
 		},
-		BootstrapSecret:  getEnvRequired("BOOTSTRAP_SECRET"),
-		HMACRequireNonce: getEnvAsBoolOptional("HMAC_REQUIRE_NONCE", false),
+		BootstrapSecret: getEnvRequired("BOOTSTRAP_SECRET"),
 	}
 
 	// Valida valores específicos
@@ -300,19 +296,6 @@ func getEnvAsIntOptional(key string, def int) int {
 func getEnvAsSliceRequired(key string) []string {
 	valueStr := getEnvRequired(key)
 	return strings.Split(valueStr, ",")
-}
-
-// getEnvAsBoolOptional obtém uma variável opcional como bool (default se ausente/vazia).
-func getEnvAsBoolOptional(key string, def bool) bool {
-	valueStr := strings.TrimSpace(os.Getenv(key))
-	if valueStr == "" {
-		return def
-	}
-	value, err := strconv.ParseBool(valueStr)
-	if err != nil {
-		panic(fmt.Sprintf("Variável %s deve ser um valor booleano (true/false) (atual: %s)", key, valueStr))
-	}
-	return value
 }
 
 // getEnvAsBoolRequired obtém uma variável de ambiente obrigatória como bool
