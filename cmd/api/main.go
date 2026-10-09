@@ -153,7 +153,7 @@ func main() {
 	passwordResetHandler := handler.NewPasswordResetHandler(passwordResetUseCase)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService)
-	syncMiddleware := middleware.NewSyncMiddleware(cfg.BootstrapSecret)
+	syncMiddleware := middleware.NewSyncMiddleware(cfg.BootstrapSecret, cfg.HMACRequireNonce)
 	corsMiddleware := middleware.NewCORSMiddleware(cfg.CORS.AllowedOrigins)
 
 	docsHandler := handler.NewDocsHandler(cfg.Docs)
