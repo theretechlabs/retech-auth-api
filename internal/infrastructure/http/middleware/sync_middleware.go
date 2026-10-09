@@ -2,114 +2,69 @@ package middleware
 
 import (
 	"bytes"
-	"context"
-	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/theretech/retech-auth-api/internal/application/service"
 )
 
-// SyncMiddleware é um middleware flexível para /sync que aceita JWT OU HMAC
+// maxSignedBodyBytes limita o body lido para validação HMAC (manifests são
+// pequenos; evita que um cliente anônimo force leitura ilimitada em memória).
+const maxSignedBodyBytes = 1 << 20 // 1 MiB
+
+// SyncMiddleware protege rotas internas (serviço → serviço): /applications/sync
+// e /password-reset/*. Exige HMAC-SHA256(body+timestamp) com o BOOTSTRAP_SECRET
+// compartilhado. Não há fallback para JWT: um token de usuário final de qualquer
+// aplicação NÃO autoriza criar aplicações/roles/permissões nem redefinir senhas.
 type SyncMiddleware struct {
-	jwtService      service.JWTService
 	bootstrapSecret string
 }
 
-// NewSyncMiddleware cria uma nova instância do middleware flexível para /sync
-func NewSyncMiddleware(jwtService service.JWTService, bootstrapSecret string) *SyncMiddleware {
-	return &SyncMiddleware{
-		jwtService:      jwtService,
-		bootstrapSecret: bootstrapSecret,
-	}
+// NewSyncMiddleware cria o middleware de autenticação HMAC para rotas internas.
+func NewSyncMiddleware(bootstrapSecret string) *SyncMiddleware {
+	return &SyncMiddleware{bootstrapSecret: bootstrapSecret}
 }
 
-// AuthenticateSync valida autenticação para /sync (aceita JWT OU HMAC assinado)
+// AuthenticateSync valida a assinatura HMAC obrigatória (X-Signature + X-Timestamp).
 func (m *SyncMiddleware) AuthenticateSync() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 1. Primeiro, tenta HMAC (bootstrap com secret compartilhado)
+		if m.bootstrapSecret == "" {
+			// Fail-closed: sem secret configurado a rota interna fica indisponível.
+			respondWithError(c, http.StatusServiceUnavailable, "Bootstrap não configurado: BOOTSTRAP_SECRET não definido")
+			return
+		}
+
 		signature := c.GetHeader("X-Signature")
 		timestampStr := c.GetHeader("X-Timestamp")
-
-		if signature != "" && timestampStr != "" {
-			// Ler body para validar HMAC
-			body, err := io.ReadAll(c.Request.Body)
-			if err != nil {
-				respondWithError(c, http.StatusBadRequest, "Erro ao ler body da requisição")
-				c.Abort()
-				return
-			}
-
-			// Restaurar body para o handler usar depois
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
-
-			// Converter timestamp
-			timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
-			if err != nil {
-				respondWithError(c, http.StatusBadRequest, "Timestamp inválido")
-				c.Abort()
-				return
-			}
-
-			// Validar HMAC
-			if err := ValidateHMAC(body, timestamp, signature, m.bootstrapSecret); err != nil {
-				if m.bootstrapSecret == "" {
-					respondWithError(c, http.StatusServiceUnavailable, "Bootstrap não configurado: BOOTSTRAP_SECRET não definido")
-				} else {
-					respondWithError(c, http.StatusUnauthorized, fmt.Sprintf("Assinatura HMAC inválida: %v", err))
-				}
-				c.Abort()
-				return
-			}
-
-			// HMAC válido → permite bootstrap
-			// Para bootstrap, não precisamos de application_id no contexto
-			// O use case vai criar/atualizar a aplicação baseado no manifest
-			c.Next()
+		if signature == "" || timestampStr == "" {
+			respondWithError(c, http.StatusUnauthorized, "Assinatura HMAC obrigatória: envie X-Signature e X-Timestamp")
 			return
 		}
 
-		// 2. Se não tem HMAC, tenta JWT (uso normal)
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			respondWithError(c, http.StatusUnauthorized, "Token de autenticação ou assinatura HMAC não fornecidos. Use Authorization: Bearer {token} ou X-Signature + X-Timestamp com secret compartilhado")
-			c.Abort()
-			return
-		}
-
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			respondWithError(c, http.StatusUnauthorized, "Formato de token inválido")
-			c.Abort()
-			return
-		}
-
-		tokenString := parts[1]
-		claims, err := m.jwtService.ValidateToken(tokenString)
+		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 		if err != nil {
-			if err == service.ErrExpiredToken {
-				respondWithError(c, http.StatusUnauthorized, "Token expirado")
-				c.Abort()
-				return
-			}
-			respondWithError(c, http.StatusUnauthorized, "Token inválido")
-			c.Abort()
+			respondWithError(c, http.StatusUnauthorized, "Assinatura HMAC inválida")
 			return
 		}
 
-		// JWT válido → insere application_id e tenant_id no contexto (uso normal)
-		ctx := c.Request.Context()
-		ctx = context.WithValue(ctx, UserIDKey, claims.UserID)
-		ctx = context.WithValue(ctx, UserEmailKey, claims.Email)
-		ctx = context.WithValue(ctx, ApplicationIDKey, claims.ApplicationID)
-		if claims.TenantID != nil {
-			ctx = context.WithValue(ctx, TenantIDKey, *claims.TenantID)
+		body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxSignedBodyBytes))
+		if err != nil {
+			respondWithError(c, http.StatusBadRequest, "Erro ao ler body da requisição")
+			return
+		}
+		// Restaura o body para o handler.
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
+		if err := ValidateHMAC(body, timestamp, signature, m.bootstrapSecret); err != nil {
+			// Detalhe (timestamp fora da janela vs assinatura errada) só no log,
+			// nunca na resposta.
+			log.Printf("hmac rejeitado em %s %s: %v", c.Request.Method, c.FullPath(), err)
+			respondWithError(c, http.StatusUnauthorized, "Assinatura HMAC inválida")
+			return
 		}
 
-		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
 }
