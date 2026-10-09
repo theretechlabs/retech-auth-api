@@ -360,8 +360,10 @@
 									"const secret = pm.variables.get('bootstrapSecret') || '';",
 									"const body = pm.request.body && pm.request.body.raw ? pm.variables.replaceIn(pm.request.body.raw) : '';",
 									"const ts = Math.floor(Date.now() / 1000).toString();",
-									"const sig = CryptoJS.HmacSHA256(body + ts, secret).toString(CryptoJS.enc.Hex);",
+									"const nonce = CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);",
+									"const sig = CryptoJS.HmacSHA256(body + ts + nonce, secret).toString(CryptoJS.enc.Hex);",
 									"pm.request.headers.upsert({ key: 'X-Timestamp', value: ts });",
+									"pm.request.headers.upsert({ key: 'X-Nonce', value: nonce });",
 									"pm.request.headers.upsert({ key: 'X-Signature', value: sig });"
 								]
 							}
