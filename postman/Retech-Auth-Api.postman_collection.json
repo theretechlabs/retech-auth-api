@@ -16,7 +16,8 @@
 		{ "key": "userId", "value": "" },
 		{ "key": "applicationId", "value": "" },
 		{ "key": "roleId", "value": "" },
-		{ "key": "permissionId", "value": "" }
+		{ "key": "permissionId", "value": "" },
+		{ "key": "bootstrapSecret", "value": "" }
 	],
 	"item": [
 		{
@@ -334,11 +335,27 @@
 					"response": []
 				},
 				{
-					"name": "POST /v1/applications/sync (Bearer)",
+					"name": "POST /v1/applications/sync (HMAC)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Rota interna: assina body+timestamp com HMAC-SHA256 usando {{bootstrapSecret}}.",
+									"const secret = pm.variables.get('bootstrapSecret') || '';",
+									"const body = pm.request.body && pm.request.body.raw ? pm.variables.replaceIn(pm.request.body.raw) : '';",
+									"const ts = Math.floor(Date.now() / 1000).toString();",
+									"const sig = CryptoJS.HmacSHA256(body + ts, secret).toString(CryptoJS.enc.Hex);",
+									"pm.request.headers.upsert({ key: 'X-Timestamp', value: ts });",
+									"pm.request.headers.upsert({ key: 'X-Signature', value: sig });"
+								]
+							}
+						}
+					],
 					"request": {
 						"method": "POST",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
 							{ "key": "Content-Type", "value": "application/json" }
 						],
 						"body": {
@@ -346,7 +363,7 @@
 							"raw": "{\n  \"application\": {\n    \"code\": \"{{applicationCode}}\",\n    \"name\": \"App Sync\",\n    \"description\": \"Manifest mínimo\"\n  },\n  \"permissions\": [\n    {\n      \"code\": \"app.example.view\",\n      \"description\": \"Exemplo\",\n      \"subject\": \"Example\",\n      \"action\": \"view\"\n    }\n  ],\n  \"roles\": [\n    {\n      \"code\": \"admin.example\",\n      \"name\": \"Admin Example\",\n      \"system\": false,\n      \"description\": \"\",\n      \"permissions\": [\"app.example.view\"]\n    }\n  ]\n}"
 						},
 						"url": "{{baseUrlDev}}/v1/applications/sync",
-						"description": "Também aceita HMAC: headers `X-Signature` + `X-Timestamp` e body bruto assinado com `BOOTSTRAP_SECRET` (ver middleware sync)."
+						"description": "Rota interna (serviço → serviço): exige `X-Signature` + `X-Timestamp` (HMAC-SHA256 do body bruto + timestamp com `BOOTSTRAP_SECRET`). JWT NÃO é aceito. O pre-request script assina automaticamente a partir da variável `bootstrapSecret`."
 					},
 					"response": []
 				}

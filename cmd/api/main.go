@@ -153,7 +153,7 @@ func main() {
 	passwordResetHandler := handler.NewPasswordResetHandler(passwordResetUseCase)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService)
-	syncMiddleware := middleware.NewSyncMiddleware(jwtService, cfg.BootstrapSecret)
+	syncMiddleware := middleware.NewSyncMiddleware(cfg.BootstrapSecret)
 	corsMiddleware := middleware.NewCORSMiddleware(cfg.CORS.AllowedOrigins)
 
 	docsHandler := handler.NewDocsHandler(cfg.Docs)
@@ -183,7 +183,7 @@ func main() {
 
 				protected.GET("/applications", managementHandler.ListApplications)
 				protected.POST("/applications", managementHandler.CreateApplication)
-				// /sync aceita JWT (uso normal) OU API Key (bootstrap)
+				// /sync é rota interna: exige HMAC com BOOTSTRAP_SECRET (sem fallback JWT)
 				r.POST("/applications/sync", syncMiddleware.AuthenticateSync(), managementHandler.SyncManifest)
 
 				// Fluxo "esqueci a senha" — consumido por serviços internos via HMAC
