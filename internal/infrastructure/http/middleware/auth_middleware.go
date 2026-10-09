@@ -51,7 +51,8 @@ func (m *AuthMiddleware) Authenticate() gin.HandlerFunc {
 
 		tokenString := parts[1]
 
-		claims, err := m.jwtService.ValidateToken(tokenString)
+		// Só access token (typ=access): refresh token não autentica requisições.
+		claims, err := m.jwtService.ValidateAccessToken(tokenString)
 		if err != nil {
 			if err == service.ErrExpiredToken {
 				respondWithError(c, http.StatusUnauthorized, "Token expirado")

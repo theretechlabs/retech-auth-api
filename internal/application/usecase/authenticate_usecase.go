@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log"
+	"time"
 
 	"github.com/theretech/retech-auth-api/internal/application/service"
 	"github.com/theretech/retech-auth-api/internal/domain/dto"
+	"github.com/theretech/retech-auth-api/internal/domain/entity"
 	"github.com/theretech/retech-auth-api/internal/domain/repository"
 )
 
@@ -19,6 +21,7 @@ var (
 // AuthenticateUseCase representa o caso de uso de autenticação
 type AuthenticateUseCase struct {
 	authRepo    repository.AuthRepository
+	refreshRepo repository.RefreshTokenRepository
 	hashService service.HashService
 	jwtService  service.JWTService
 }
@@ -26,11 +29,13 @@ type AuthenticateUseCase struct {
 // NewAuthenticateUseCase cria uma nova instância de AuthenticateUseCase
 func NewAuthenticateUseCase(
 	authRepo repository.AuthRepository,
+	refreshRepo repository.RefreshTokenRepository,
 	hashService service.HashService,
 	jwtService service.JWTService,
 ) *AuthenticateUseCase {
 	return &AuthenticateUseCase{
 		authRepo:    authRepo,
+		refreshRepo: refreshRepo,
 		hashService: hashService,
 		jwtService:  jwtService,
 	}
@@ -87,21 +92,33 @@ func (uc *AuthenticateUseCase) Execute(ctx context.Context, req dto.Authenticate
 	permCodes := buildPermCodes(roleCodes, permissions)
 
 	// Gera os tokens incluindo tenant_id (do user_application), roles, perms e name
-	accessToken, err := uc.jwtService.GenerateAccessToken(user.ID, app.ID, user.Email, user.Name, userApp.TenantID, roleCodes, permCodes)
+	subject := service.TokenSubject{
+		UserID: user.ID, ApplicationID: app.ID, ApplicationCode: app.Code,
+		Email: user.Email, Name: user.Name, TenantID: userApp.TenantID, Roles: roleCodes, Perms: permCodes,
+	}
+	accessToken, err := uc.jwtService.GenerateAccessToken(subject)
 	if err != nil {
 		log.Printf("[authenticate] erro ao gerar access token email=%q user_id=%s err=%v", user.Email, user.ID, err)
 		return nil, err
 	}
 
-	refreshToken, err := uc.jwtService.GenerateRefreshToken(user.ID, app.ID, user.Email, user.Name, userApp.TenantID, roleCodes)
+	refreshToken, err := uc.jwtService.GenerateRefreshToken(subject)
 	if err != nil {
 		log.Printf("[authenticate] erro ao gerar refresh token email=%q user_id=%s err=%v", user.Email, user.ID, err)
+		return nil, err
+	}
+	// O jti vai pro banco: é o que permite rotação, logout e detecção de reuso.
+	if err := uc.refreshRepo.Create(ctx, &entity.RefreshToken{
+		ID: refreshToken.JTI, UserID: user.ID, ApplicationID: app.ID,
+		ExpiresAt: refreshToken.ExpiresAt, CreatedAt: time.Now(),
+	}); err != nil {
+		log.Printf("[authenticate] erro ao registrar refresh token email=%q user_id=%s err=%v", user.Email, user.ID, err)
 		return nil, err
 	}
 
 	return &dto.AuthenticateResponse{
 		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
+		RefreshToken: refreshToken.Token,
 		TokenType:    "Bearer",
 		ExpiresIn:    uc.jwtService.GetExpirationTime(),
 		User: dto.UserDTO{

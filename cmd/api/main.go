@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/theretech/retech-auth-api/internal/application/service"
@@ -129,11 +131,31 @@ func main() {
 		rsaKeyService,
 		cfg.JWT.AccessTokenTTL(),
 		cfg.JWT.RefreshTokenTTL(),
+		cfg.JWT.Issuer,
 	)
 	log.Printf("⏱️ Validade dos tokens: access=%s refresh=%s", cfg.JWT.AccessTokenTTL(), cfg.JWT.RefreshTokenTTL())
 
-	authenticateUseCase := usecase.NewAuthenticateUseCase(authRepo, hashService, jwtService)
-	refreshTokenUseCase := usecase.NewRefreshTokenUseCase(userRepo, authRepo, jwtService)
+	refreshTokenRepo := repository.NewPostgresRefreshTokenRepository(db)
+	// Manutenção: refresh tokens expirados saem do banco (a tabela não cresce sem limite).
+	go func() {
+		purge := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if n, err := refreshTokenRepo.DeleteExpired(ctx, time.Now().Add(-24*time.Hour)); err != nil {
+				log.Printf("⚠️ purge de refresh tokens falhou: %v", err)
+			} else if n > 0 {
+				log.Printf("🧹 refresh tokens expirados removidos: %d", n)
+			}
+		}
+		purge()
+		for range time.Tick(time.Hour) {
+			purge()
+		}
+	}()
+
+	authenticateUseCase := usecase.NewAuthenticateUseCase(authRepo, refreshTokenRepo, hashService, jwtService)
+	refreshTokenUseCase := usecase.NewRefreshTokenUseCase(userRepo, authRepo, refreshTokenRepo, jwtService)
+	logoutUseCase := usecase.NewLogoutUseCase(refreshTokenRepo, jwtService)
 	getUserInfoUseCase := usecase.NewGetUserInfoUseCase(userRepo, authRepo, appRepo)
 	listUsersUseCase := usecase.NewListUsersUseCase(userRepo, authRepo)
 	userManagementUseCase := usecase.NewUserManagementUseCase(userRepo, authRepo, appRepo, hashService)
@@ -141,12 +163,22 @@ func main() {
 	passwordResetRepo := repository.NewPostgresPasswordResetRepository(db)
 	passwordResetUseCase := usecase.NewPasswordResetUseCase(userRepo, passwordResetRepo, hashService)
 
+	// Rate limit (por instância, em memória): brute force de senha, de refresh e de reset.
+	loginByIP := middleware.NewRateLimiter(cfg.RateLimit.LoginPerIP, time.Minute)
+	loginByEmail := middleware.NewRateLimiter(cfg.RateLimit.LoginPerEmail, time.Minute)
+	refreshByIP := middleware.NewRateLimiter(cfg.RateLimit.RefreshPerIP, time.Minute)
+	resetByIP := middleware.NewRateLimiter(cfg.RateLimit.PasswordResetIP, time.Minute)
+	log.Printf("🚦 Rate limit/min: login ip=%d email=%d, refresh ip=%d, password-reset ip=%d (0 = desligado)",
+		cfg.RateLimit.LoginPerIP, cfg.RateLimit.LoginPerEmail, cfg.RateLimit.RefreshPerIP, cfg.RateLimit.PasswordResetIP)
+
 	authHandler := handler.NewAuthHandler(
 		authenticateUseCase,
 		refreshTokenUseCase,
+		logoutUseCase,
 		getUserInfoUseCase,
 		jwtService,
 		db,
+		loginByEmail,
 	)
 	userHandler := handler.NewUserHandler(listUsersUseCase, userManagementUseCase)
 	managementHandler := handler.NewManagementHandler(managementUseCase)
@@ -163,9 +195,10 @@ func main() {
 			Prefix: "/v1",
 			Register: func(r *gin.RouterGroup) {
 				r.GET("/health", authHandler.Health)
-				r.POST("/authenticate", authHandler.Authenticate)
-				r.POST("/account/authenticate", authHandler.Authenticate) // Alias para compatibilidade
-				r.POST("/refresh", authHandler.RefreshToken)
+				r.POST("/authenticate", loginByIP.Middleware(middleware.KeyByClientIP), authHandler.Authenticate)
+				r.POST("/account/authenticate", loginByIP.Middleware(middleware.KeyByClientIP), authHandler.Authenticate) // Alias para compatibilidade
+				r.POST("/refresh", refreshByIP.Middleware(middleware.KeyByClientIP), authHandler.RefreshToken)
+				r.POST("/logout", refreshByIP.Middleware(middleware.KeyByClientIP), authHandler.Logout)
 
 				protected := r.Group("")
 				protected.Use(authMiddleware.Authenticate())
@@ -188,8 +221,8 @@ func main() {
 
 				// Fluxo "esqueci a senha" — consumido por serviços internos via HMAC
 				// (quem envia o e-mail é o serviço do produto, ex.: retech-meufin-api)
-				r.POST("/password-reset/request", syncMiddleware.AuthenticateSync(), passwordResetHandler.Request)
-				r.POST("/password-reset/confirm", syncMiddleware.AuthenticateSync(), passwordResetHandler.Confirm)
+				r.POST("/password-reset/request", resetByIP.Middleware(middleware.KeyByClientIP), syncMiddleware.AuthenticateSync(), passwordResetHandler.Request)
+				r.POST("/password-reset/confirm", resetByIP.Middleware(middleware.KeyByClientIP), syncMiddleware.AuthenticateSync(), passwordResetHandler.Confirm)
 				protected.GET("/applications/:id", managementHandler.GetApplication)
 				protected.PUT("/applications/:id", managementHandler.UpdateApplication)
 				protected.DELETE("/applications/:id", managementHandler.DeleteApplication)

@@ -23,6 +23,12 @@ type RefreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+// LogoutRequest revoga o refresh token (all=true: todos do usuário na aplicação)
+type LogoutRequest struct {
+	RefreshToken string `json:"refresh_token"`
+	All          bool   `json:"all,omitempty"`
+}
+
 // UserDTO representa os dados do usuário para resposta
 type UserDTO struct {
 	ID    uuid.UUID `json:"id"`
