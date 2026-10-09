@@ -23,7 +23,7 @@ type AuthHandler struct {
 	getUserInfoUseCase  *usecase.GetUserInfoUseCase
 	jwtService          service.JWTService
 	db                  *sql.DB
-	// loginByEmail limita tentativas de login por e-mail (independente do IP).
+	// loginByEmail limita tentativas de login por e-mail (mesmo vindo de IPs diferentes).
 	// nil = desligado.
 	loginByEmail *middleware.RateLimiter
 }
