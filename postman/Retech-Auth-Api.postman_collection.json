@@ -111,6 +111,20 @@
 						"url": "{{baseUrlDev}}/v1/refresh"
 					},
 					"response": []
+				},
+				{
+					"name": "POST /v1/logout",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refresh_token\": \"{{refreshToken}}\",\n  \"all\": false\n}"
+						},
+						"url": "{{baseUrlDev}}/v1/logout",
+						"description": "Revoga o refresh token (204). `all: true` revoga todos os refresh tokens do usuário na aplicação."
+					},
+					"response": []
 				}
 			]
 		},

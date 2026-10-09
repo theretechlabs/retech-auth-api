@@ -18,7 +18,17 @@ type Config struct {
 	JWT             JWTConfig
 	CORS            CORSConfig
 	Docs            DocsConfig
+	RateLimit       RateLimitConfig
 	BootstrapSecret string
+}
+
+// RateLimitConfig: eventos por minuto por chave (0 = desligado). Em memória,
+// por instância.
+type RateLimitConfig struct {
+	LoginPerIP      int // RATE_LIMIT_LOGIN_PER_MINUTE (por IP)
+	LoginPerEmail   int // RATE_LIMIT_LOGIN_PER_EMAIL_PER_MINUTE
+	RefreshPerIP    int // RATE_LIMIT_REFRESH_PER_MINUTE
+	PasswordResetIP int // RATE_LIMIT_PASSWORD_RESET_PER_MINUTE (por IP)
 }
 
 // ServerConfig armazena as configurações do servidor
@@ -43,6 +53,8 @@ type JWTConfig struct {
 	ExpirationHours        int
 	ExpirationMinutes      int // opcional (JWT_EXPIRATION_MINUTES); > 0 prevalece sobre ExpirationHours
 	RefreshExpirationHours int
+	// Issuer é o claim `iss` (JWT_ISSUER, opcional; padrão "retech-auth-api").
+	Issuer string
 }
 
 // AccessTokenTTL é a validade do access token. Consumidores que renovam
@@ -109,6 +121,13 @@ func Load() (*Config, error) {
 			ExpirationHours:        getEnvAsIntRequired("JWT_EXPIRATION_HOURS"),
 			ExpirationMinutes:      getEnvAsIntOptional("JWT_EXPIRATION_MINUTES", 0),
 			RefreshExpirationHours: getEnvAsIntRequired("JWT_REFRESH_EXPIRATION_HOURS"),
+			Issuer:                 strings.TrimSpace(os.Getenv("JWT_ISSUER")),
+		},
+		RateLimit: RateLimitConfig{
+			LoginPerIP:      getEnvAsIntOptional("RATE_LIMIT_LOGIN_PER_MINUTE", 20),
+			LoginPerEmail:   getEnvAsIntOptional("RATE_LIMIT_LOGIN_PER_EMAIL_PER_MINUTE", 10),
+			RefreshPerIP:    getEnvAsIntOptional("RATE_LIMIT_REFRESH_PER_MINUTE", 60),
+			PasswordResetIP: getEnvAsIntOptional("RATE_LIMIT_PASSWORD_RESET_PER_MINUTE", 5),
 		},
 		CORS: CORSConfig{
 			AllowedOrigins: getEnvAsSliceRequired("CORS_ALLOWED_ORIGINS"),

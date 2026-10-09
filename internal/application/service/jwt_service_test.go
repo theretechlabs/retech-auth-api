@@ -20,7 +20,11 @@ func newTestJWTService(t *testing.T) (JWTService, RSAKeyService) {
 		t.Fatalf("erro ao criar RSAKeyService: %v", err)
 	}
 
-	return NewJWTService(rsaSvc, time.Hour, 2*time.Hour), rsaSvc
+	return NewJWTService(rsaSvc, time.Hour, 2*time.Hour, "test-issuer"), rsaSvc
+}
+
+func subject() TokenSubject {
+	return TokenSubject{UserID: uuid.New(), ApplicationID: uuid.New(), ApplicationCode: "app", Email: "u@example.com", Name: "U"}
 }
 
 func TestJWTService_RoundTripAccessToken(t *testing.T) {
@@ -32,14 +36,23 @@ func TestJWTService_RoundTripAccessToken(t *testing.T) {
 	roles := []string{"master"}
 	perms := []string{"all:manage"}
 
-	token, err := jwtSvc.GenerateAccessToken(userID, appID, "user@example.com", "Usuário", &tenant, roles, perms)
+	token, err := jwtSvc.GenerateAccessToken(TokenSubject{
+		UserID: userID, ApplicationID: appID, ApplicationCode: "retech-fin-admin",
+		Email: "user@example.com", Name: "Usuário", TenantID: &tenant, Roles: roles, Perms: perms,
+	})
 	if err != nil {
 		t.Fatalf("erro ao gerar access token: %v", err)
 	}
 
-	claims, err := jwtSvc.ValidateToken(token)
+	claims, err := jwtSvc.ValidateAccessToken(token)
 	if err != nil {
 		t.Fatalf("erro ao validar token: %v", err)
+	}
+	if claims.Typ != TokenTypeAccess || claims.Issuer != "test-issuer" || claims.ID == "" {
+		t.Errorf("typ/iss/jti inesperados: typ=%q iss=%q jti=%q", claims.Typ, claims.Issuer, claims.ID)
+	}
+	if len(claims.Audience) != 1 || claims.Audience[0] != "retech-fin-admin" {
+		t.Errorf("aud inesperado: %v", claims.Audience)
 	}
 
 	if claims.Sub != userID.String() || claims.UserID != userID {
@@ -74,12 +87,15 @@ func TestJWTService_RoundTripAccessToken(t *testing.T) {
 func TestJWTService_RefreshTokenNaoCarregaPerms(t *testing.T) {
 	jwtSvc, _ := newTestJWTService(t)
 
-	token, err := jwtSvc.GenerateRefreshToken(uuid.New(), uuid.New(), "u@example.com", "U", nil, []string{"viewer"})
+	s := subject()
+	s.Roles = []string{"viewer"}
+	s.Perms = []string{"x:view"}
+	issued, err := jwtSvc.GenerateRefreshToken(s)
 	if err != nil {
 		t.Fatalf("erro ao gerar refresh token: %v", err)
 	}
 
-	claims, err := jwtSvc.ValidateToken(token)
+	claims, err := jwtSvc.ValidateRefreshToken(issued.Token)
 	if err != nil {
 		t.Fatalf("erro ao validar refresh token: %v", err)
 	}
@@ -89,12 +105,79 @@ func TestJWTService_RefreshTokenNaoCarregaPerms(t *testing.T) {
 	if claims.TenantID != nil {
 		t.Errorf("tenant_id deveria ser nil, obteve %v", *claims.TenantID)
 	}
+	if claims.ID != issued.JTI.String() {
+		t.Errorf("jti inesperado: %s vs %s", claims.ID, issued.JTI)
+	}
+	if !issued.ExpiresAt.Equal(claims.ExpiresAt.Time) {
+		t.Errorf("exp inesperado: %v vs %v", issued.ExpiresAt, claims.ExpiresAt.Time)
+	}
+}
+
+func TestJWTService_TiposNaoSaoIntercambiaveis(t *testing.T) {
+	jwtSvc, _ := newTestJWTService(t)
+	s := subject()
+
+	access, err := jwtSvc.GenerateAccessToken(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := jwtSvc.GenerateRefreshToken(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := jwtSvc.ValidateAccessToken(refresh.Token); err != ErrWrongTokenType {
+		t.Fatalf("refresh como access: esperava ErrWrongTokenType, obteve %v", err)
+	}
+	if _, err := jwtSvc.ValidateRefreshToken(access); err != ErrWrongTokenType {
+		t.Fatalf("access como refresh: esperava ErrWrongTokenType, obteve %v", err)
+	}
+}
+
+func TestJWTService_IssuerDiferenteRejeitado(t *testing.T) {
+	rsaSvc, err := NewRSAKeyService(filepath.Join(t.TempDir(), "keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := NewJWTService(rsaSvc, time.Hour, 2*time.Hour, "iss-a")
+	b := NewJWTService(rsaSvc, time.Hour, 2*time.Hour, "iss-b")
+
+	token, err := a.GenerateAccessToken(subject())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.ValidateToken(token); err != ErrInvalidToken {
+		t.Fatalf("mesma chave, iss diferente: esperava ErrInvalidToken, obteve %v", err)
+	}
+}
+
+func TestJWTService_TokenLegadoSemTypRejeitadoComoRefresh(t *testing.T) {
+	jwtSvc, rsaSvc := newTestJWTService(t)
+	kid := rsaSvc.GetCurrentKeyID()
+	priv, _ := rsaSvc.GetPrivateKey(kid)
+
+	legacy := jwt.NewWithClaims(jwt.SigningMethodRS256, &Claims{
+		UserID: uuid.New(), RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: "test-issuer", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)), IssuedAt: jwt.NewNumericDate(time.Now()),
+		},
+	})
+	legacy.Header["kid"] = kid
+	signed, err := legacy.SignedString(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jwtSvc.ValidateRefreshToken(signed); err != ErrWrongTokenType {
+		t.Fatalf("esperava ErrWrongTokenType, obteve %v", err)
+	}
+	if _, err := jwtSvc.ValidateAccessToken(signed); err != ErrWrongTokenType {
+		t.Fatalf("esperava ErrWrongTokenType, obteve %v", err)
+	}
 }
 
 func TestJWTService_TokenAdulteradoRejeitado(t *testing.T) {
 	jwtSvc, _ := newTestJWTService(t)
 
-	token, err := jwtSvc.GenerateAccessToken(uuid.New(), uuid.New(), "u@example.com", "U", nil, nil, nil)
+	token, err := jwtSvc.GenerateAccessToken(subject())
 	if err != nil {
 		t.Fatalf("erro ao gerar token: %v", err)
 	}
@@ -123,7 +206,7 @@ func TestJWTService_TokenDeOutraChaveRejeitado(t *testing.T) {
 	jwtSvcA, _ := newTestJWTService(t)
 	jwtSvcB, _ := newTestJWTService(t)
 
-	token, err := jwtSvcA.GenerateAccessToken(uuid.New(), uuid.New(), "u@example.com", "U", nil, nil, nil)
+	token, err := jwtSvcA.GenerateAccessToken(subject())
 	if err != nil {
 		t.Fatalf("erro ao gerar token: %v", err)
 	}

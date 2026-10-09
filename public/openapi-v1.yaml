@@ -171,6 +171,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -242,12 +244,19 @@ paths:
                 error: "Forbidden"
                 message: "Usuário inativo"
                 code: 403
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
   /refresh:
     post:
-      summary: Gera novo access token
+      summary: Gera novo access token (rotaciona o refresh token)
+      description: |
+        Cada refresh token vale **uma** renovação: a resposta traz um refresh token novo e o
+        anterior é revogado. Reapresentar um refresh token já usado revoga todos os refresh
+        tokens do usuário na aplicação (detecção de reuso). Tokens emitidos antes desta
+        versão (sem `typ`/`jti`) são recusados — o cliente deve autenticar de novo.
       tags: [Autenticação]
       requestBody:
         required: true
@@ -281,6 +290,42 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /logout:
+    post:
+      summary: Encerra a sessão (revoga o refresh token)
+      description: |
+        Revoga o refresh token apresentado. Com `all: true` revoga todos os refresh tokens
+        do usuário na aplicação (logout de todos os dispositivos). O access token continua
+        válido até o `exp` (curto) — o gateway de sessão do produto deve descartá-lo.
+        Token já expirado é idempotente (204).
+      tags: [Autenticação]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+                all:
+                  type: boolean
+                  default: false
+      responses:
+        "204":
+          description: Refresh token revogado
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -2039,6 +2084,17 @@ components:
             error: "Not Found"
             message: "Recurso não encontrado"
             code: 404
+    
+    TooManyRequests:
+      description: Limite de tentativas excedido (ver header Retry-After)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Too Many Requests"
+            message: "Muitas tentativas. Tente novamente em instantes."
+            code: 429
     
     InternalServerError:
       description: Erro interno do servidor

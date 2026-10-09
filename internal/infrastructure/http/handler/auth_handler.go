@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/theretech/retech-auth-api/internal/application/service"
@@ -17,25 +19,33 @@ import (
 type AuthHandler struct {
 	authenticateUseCase *usecase.AuthenticateUseCase
 	refreshTokenUseCase *usecase.RefreshTokenUseCase
+	logoutUseCase       *usecase.LogoutUseCase
 	getUserInfoUseCase  *usecase.GetUserInfoUseCase
 	jwtService          service.JWTService
 	db                  *sql.DB
+	// loginByEmail limita tentativas de login por e-mail (independente do IP).
+	// nil = desligado.
+	loginByEmail *middleware.RateLimiter
 }
 
 // NewAuthHandler cria uma nova instância de AuthHandler
 func NewAuthHandler(
 	authenticateUseCase *usecase.AuthenticateUseCase,
 	refreshTokenUseCase *usecase.RefreshTokenUseCase,
+	logoutUseCase *usecase.LogoutUseCase,
 	getUserInfoUseCase *usecase.GetUserInfoUseCase,
 	jwtService service.JWTService,
 	db *sql.DB,
+	loginByEmail *middleware.RateLimiter,
 ) *AuthHandler {
 	return &AuthHandler{
 		authenticateUseCase: authenticateUseCase,
 		refreshTokenUseCase: refreshTokenUseCase,
+		logoutUseCase:       logoutUseCase,
 		getUserInfoUseCase:  getUserInfoUseCase,
 		jwtService:          jwtService,
 		db:                  db,
+		loginByEmail:        loginByEmail,
 	}
 }
 
@@ -55,6 +65,14 @@ func (h *AuthHandler) Authenticate(c *gin.Context) {
 			clientIP, req.Email == "", req.Password == "", req.ApplicationCode == "",
 		)
 		respondWithError(c, http.StatusBadRequest, "Email, senha e código da aplicação são obrigatórios")
+		return
+	}
+
+	// Limite por e-mail: brute force distribuído (vários IPs) numa conta só.
+	if ok, retry := h.loginByEmail.Allow(strings.ToLower(strings.TrimSpace(req.Email))); !ok {
+		log.Printf("[auth] POST /authenticate 429 limite_por_email ip=%s email=%q", clientIP, req.Email)
+		c.Header("Retry-After", strconv.Itoa(max(1, int(retry.Seconds()))))
+		respondWithError(c, http.StatusTooManyRequests, "Muitas tentativas para este e-mail. Tente novamente em instantes.")
 		return
 	}
 
@@ -82,6 +100,25 @@ func (h *AuthHandler) Authenticate(c *gin.Context) {
 
 	log.Printf("[auth] POST /authenticate 200 ok ip=%s email=%q application_code=%q user_id=%s", clientIP, req.Email, req.ApplicationCode, response.User.ID)
 	respondWithJSON(c, http.StatusOK, response)
+}
+
+// Logout revoga o refresh token (e, com all=true, todos os do usuário na aplicação).
+// Quem chama é o gateway de sessão do produto; o access token morre pelo exp.
+func (h *AuthHandler) Logout(c *gin.Context) {
+	var req dto.LogoutRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.RefreshToken == "" {
+		respondWithError(c, http.StatusBadRequest, "Refresh token é obrigatório")
+		return
+	}
+	if err := h.logoutUseCase.Execute(c.Request.Context(), req.RefreshToken, req.All); err != nil {
+		if err == usecase.ErrInvalidRefreshToken {
+			respondWithError(c, http.StatusUnauthorized, "Refresh token inválido")
+			return
+		}
+		respondWithError(c, http.StatusInternalServerError, "Erro ao encerrar sessão")
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // RefreshToken manipula a requisição de renovação de token

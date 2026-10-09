@@ -12,7 +12,19 @@ import (
 var (
 	ErrInvalidToken = errors.New("token inválido")
 	ErrExpiredToken = errors.New("token expirado")
+	// ErrWrongTokenType indica que o token é válido mas não é do tipo esperado
+	// (ex.: refresh token usado como access token).
+	ErrWrongTokenType = errors.New("tipo de token inesperado")
 )
+
+// Tipos de token (claim `typ`). Access e refresh nunca são intercambiáveis.
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
+)
+
+// DefaultIssuer é o `iss` padrão quando JWT_ISSUER não está definido.
+const DefaultIssuer = "retech-auth-api"
 
 // Claims representa as claims do JWT
 type Claims struct {
@@ -25,14 +37,41 @@ type Claims struct {
 	TenantID      *string   `json:"tenant_id,omitempty"` // ID da unidade (tenant). Carregado do banco e incluído no token.
 	Roles         []string  `json:"roles,omitempty"`     // Array de role codes (ex: ["master", "core_admin"]). Usado para autorização e multi-tenancy hierárquico.
 	Perms         []string  `json:"perms,omitempty"`     // Codes das permissions efetivas ("subject:action"; master = ["all:manage"]). Permite enforcement stateless nas APIs de recurso.
+	// Typ distingue access de refresh ("access" | "refresh").
+	Typ string `json:"typ"`
+	// RegisteredClaims carrega iss, aud (= application_code), jti, exp, iat, nbf.
 	jwt.RegisteredClaims
+}
+
+// TokenSubject é o que entra num par de tokens.
+type TokenSubject struct {
+	UserID          uuid.UUID
+	ApplicationID   uuid.UUID
+	ApplicationCode string // vira o claim `aud`
+	Email           string
+	Name            string
+	TenantID        *string
+	Roles           []string
+	Perms           []string // só no access token
+}
+
+// IssuedToken é um refresh token emitido, com o `jti` que deve ser persistido.
+type IssuedToken struct {
+	Token     string
+	JTI       uuid.UUID
+	ExpiresAt time.Time
 }
 
 // JWTService fornece métodos para geração e validação de tokens JWT
 type JWTService interface {
-	GenerateAccessToken(userID, applicationID uuid.UUID, email, name string, tenantID *string, roles, perms []string) (string, error)
-	GenerateRefreshToken(userID, applicationID uuid.UUID, email, name string, tenantID *string, roles []string) (string, error)
+	GenerateAccessToken(s TokenSubject) (string, error)
+	GenerateRefreshToken(s TokenSubject) (IssuedToken, error)
+	// ValidateToken valida assinatura, iss e validade, sem checar o tipo.
 	ValidateToken(tokenString string) (*Claims, error)
+	// ValidateAccessToken é ValidateToken + typ=access.
+	ValidateAccessToken(tokenString string) (*Claims, error)
+	// ValidateRefreshToken é ValidateToken + typ=refresh + jti presente.
+	ValidateRefreshToken(tokenString string) (*Claims, error)
 	GetExpirationTime() int
 	GetJWKS() (map[string]interface{}, error)
 }
@@ -41,90 +80,95 @@ type jwtService struct {
 	rsaKeyService RSAKeyService
 	accessTTL     time.Duration
 	refreshTTL    time.Duration
+	issuer        string
 }
 
 // NewJWTService cria uma nova instância de JWTService usando chaves RSA.
 // accessTTL/refreshTTL são as validades dos tokens (ver JWTConfig.AccessTokenTTL).
-func NewJWTService(rsaKeyService RSAKeyService, accessTTL, refreshTTL time.Duration) JWTService {
+// issuer vazio usa DefaultIssuer.
+func NewJWTService(rsaKeyService RSAKeyService, accessTTL, refreshTTL time.Duration, issuer string) JWTService {
+	if issuer == "" {
+		issuer = DefaultIssuer
+	}
 	return &jwtService{
 		rsaKeyService: rsaKeyService,
 		accessTTL:     accessTTL,
 		refreshTTL:    refreshTTL,
+		issuer:        issuer,
 	}
+}
+
+func (s *jwtService) registered(s2 TokenSubject, ttl time.Duration, now time.Time) jwt.RegisteredClaims {
+	rc := jwt.RegisteredClaims{
+		Issuer:    s.issuer,
+		Subject:   s2.UserID.String(),
+		ID:        uuid.NewString(),
+		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		IssuedAt:  jwt.NewNumericDate(now),
+		NotBefore: jwt.NewNumericDate(now),
+	}
+	if s2.ApplicationCode != "" {
+		rc.Audience = jwt.ClaimStrings{s2.ApplicationCode}
+	}
+	return rc
+}
+
+func (s *jwtService) sign(claims *Claims) (string, error) {
+	kid := s.rsaKeyService.GetCurrentKeyID()
+	privateKey, err := s.rsaKeyService.GetPrivateKey(kid)
+	if err != nil {
+		return "", fmt.Errorf("erro ao obter chave privada: %w", err)
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = kid
+	return token.SignedString(privateKey)
 }
 
 // GenerateAccessToken gera um token de acesso usando RS256.
 // perms carrega os codes das permissions efetivas ("subject:action") para
 // enforcement stateless nas APIs de recurso; o refresh token não os carrega
 // (são recalculados a cada refresh).
-func (s *jwtService) GenerateAccessToken(userID, applicationID uuid.UUID, email, name string, tenantID *string, roles, perms []string) (string, error) {
-	expirationTime := time.Now().Add(s.accessTTL)
-	kid := s.rsaKeyService.GetCurrentKeyID()
-
+func (s *jwtService) GenerateAccessToken(sub TokenSubject) (string, error) {
+	now := time.Now()
 	claims := &Claims{
-		Sub:           userID.String(), // Padrão JWT (subject)
-		UserID:        userID,
-		Email:         email,
-		Name:          name, // Nome do usuário para desnormalização controlada em auditoria
-		ApplicationID: applicationID,
-		TenantID:      tenantID,
-		Roles:         roles, // Array de role codes para autorização e multi-tenancy hierárquico
-		Perms:         perms,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
-		},
+		Sub:              sub.UserID.String(),
+		UserID:           sub.UserID,
+		Email:            sub.Email,
+		Name:             sub.Name,
+		ApplicationID:    sub.ApplicationID,
+		TenantID:         sub.TenantID,
+		Roles:            sub.Roles,
+		Perms:            sub.Perms,
+		Typ:              TokenTypeAccess,
+		RegisteredClaims: s.registered(sub, s.accessTTL, now),
 	}
-
-	// Obtém chave privada para assinatura
-	privateKey, err := s.rsaKeyService.GetPrivateKey(kid)
-	if err != nil {
-		return "", fmt.Errorf("erro ao obter chave privada: %w", err)
-	}
-
-	// Cria token com RS256
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-
-	// Adiciona kid no header
-	token.Header["kid"] = kid
-
-	return token.SignedString(privateKey)
+	return s.sign(claims)
 }
 
-// GenerateRefreshToken gera um token de renovação usando RS256
-func (s *jwtService) GenerateRefreshToken(userID, applicationID uuid.UUID, email, name string, tenantID *string, roles []string) (string, error) {
-	expirationTime := time.Now().Add(s.refreshTTL)
-	kid := s.rsaKeyService.GetCurrentKeyID()
-
+// GenerateRefreshToken gera um token de renovação usando RS256. O `jti`
+// devolvido deve ser persistido (refresh_tokens) para rotação e revogação.
+func (s *jwtService) GenerateRefreshToken(sub TokenSubject) (IssuedToken, error) {
+	now := time.Now()
 	claims := &Claims{
-		Sub:           userID.String(), // Padrão JWT (subject)
-		UserID:        userID,
-		Email:         email,
-		Name:          name, // Nome do usuário para desnormalização controlada em auditoria
-		ApplicationID: applicationID,
-		TenantID:      tenantID,
-		Roles:         roles, // Array de role codes para autorização e multi-tenancy hierárquico
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
-		},
+		Sub:              sub.UserID.String(),
+		UserID:           sub.UserID,
+		Email:            sub.Email,
+		Name:             sub.Name,
+		ApplicationID:    sub.ApplicationID,
+		TenantID:         sub.TenantID,
+		Roles:            sub.Roles,
+		Typ:              TokenTypeRefresh,
+		RegisteredClaims: s.registered(sub, s.refreshTTL, now),
 	}
-
-	// Obtém chave privada para assinatura
-	privateKey, err := s.rsaKeyService.GetPrivateKey(kid)
+	token, err := s.sign(claims)
 	if err != nil {
-		return "", fmt.Errorf("erro ao obter chave privada: %w", err)
+		return IssuedToken{}, err
 	}
-
-	// Cria token com RS256
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-
-	// Adiciona kid no header
-	token.Header["kid"] = kid
-
-	return token.SignedString(privateKey)
+	jti, err := uuid.Parse(claims.ID)
+	if err != nil {
+		return IssuedToken{}, err
+	}
+	return IssuedToken{Token: token, JTI: jti, ExpiresAt: claims.ExpiresAt.Time}, nil
 }
 
 // ValidateToken valida e decodifica um token JWT usando chave pública RSA
@@ -154,7 +198,12 @@ func (s *jwtService) ValidateToken(tokenString string) (*Claims, error) {
 		}
 
 		return publicKey, nil
-	})
+	},
+		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+		jwt.WithIssuer(s.issuer),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+	)
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
@@ -168,6 +217,33 @@ func (s *jwtService) ValidateToken(tokenString string) (*Claims, error) {
 	}
 
 	return nil, ErrInvalidToken
+}
+
+// ValidateAccessToken valida o token e exige typ=access.
+func (s *jwtService) ValidateAccessToken(tokenString string) (*Claims, error) {
+	claims, err := s.ValidateToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Typ != TokenTypeAccess {
+		return nil, ErrWrongTokenType
+	}
+	return claims, nil
+}
+
+// ValidateRefreshToken valida o token e exige typ=refresh com jti.
+func (s *jwtService) ValidateRefreshToken(tokenString string) (*Claims, error) {
+	claims, err := s.ValidateToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Typ != TokenTypeRefresh {
+		return nil, ErrWrongTokenType
+	}
+	if _, err := uuid.Parse(claims.ID); err != nil {
+		return nil, ErrInvalidToken
+	}
+	return claims, nil
 }
 
 // GetExpirationTime retorna o tempo de expiração em segundos

@@ -95,6 +95,32 @@ paths:
         "401":
           description: Refresh token inválido
 
+  /logout:
+    post:
+      summary: Encerra a sessão (revoga o refresh token)
+      description: |
+        Revoga o refresh token apresentado. Com `all: true` revoga todos os refresh tokens
+        do usuário na aplicação (logout de todos os dispositivos). O access token continua
+        válido até o `exp` (curto) — o gateway de sessão do produto deve descartá-lo.
+        Token já expirado é idempotente (204).
+      tags: [Autenticação]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+                all:
+                  type: boolean
+                  default: false
+      responses:
+        "204":
+          description: Refresh token revogado
+
   /me:
     get:
       summary: Retorna dados do usuário autenticado
