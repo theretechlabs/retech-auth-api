@@ -154,7 +154,9 @@ func TestRefresh_ReusoRevogaFamiliaInteira(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Atacante reapresenta o token já rotacionado.
+	// Atacante reapresenta o token já rotacionado, bem depois da janela de
+	// tolerância a corridas.
+	uc.now = func() time.Time { return time.Now().Add(reuseGrace + time.Minute) }
 	if _, err := uc.Execute(context.Background(), dto.RefreshTokenRequest{RefreshToken: first.Token}); err != ErrInvalidRefreshToken {
 		t.Fatalf("reuso deveria falhar com ErrInvalidRefreshToken, obteve %v", err)
 	}
@@ -226,5 +228,55 @@ func TestLogout_RevogaEImpedeRefresh(t *testing.T) {
 
 	if err := logout.Execute(context.Background(), "lixo", false); err != ErrInvalidRefreshToken {
 		t.Fatalf("token inválido: esperava ErrInvalidRefreshToken, obteve %v", err)
+	}
+}
+
+// Duas requisições paralelas do mesmo gateway chegam com o mesmo refresh
+// token (browser voltando do idle). A segunda perde a rotação: recebe 401,
+// mas a família NÃO é revogada — o token novo (do vencedor) segue válido.
+func TestRefresh_CorridaDentroDaJanelaNaoRevogaFamilia(t *testing.T) {
+	jwtSvc := newJWT(t)
+	userID, appID := uuid.New(), uuid.New()
+	users := &fakeUserRepo{users: map[uuid.UUID]*entity.User{userID: {ID: userID, Email: "u@x", Name: "U", Active: true}}}
+	repo := newFakeRefreshRepo()
+	uc := NewRefreshTokenUseCase(users, fakeAuthRepo{}, repo, jwtSvc)
+
+	first := issue(t, jwtSvc, repo, userID, appID)
+	resp, err := uc.Execute(context.Background(), dto.RefreshTokenRequest{RefreshToken: first.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Segunda requisição com o token antigo, logo em seguida.
+	if _, err := uc.Execute(context.Background(), dto.RefreshTokenRequest{RefreshToken: first.Token}); err != ErrInvalidRefreshToken {
+		t.Fatalf("perdedor da corrida deve receber ErrInvalidRefreshToken, obteve %v", err)
+	}
+	if len(repo.revoked) != 0 {
+		t.Fatalf("corrida dentro da janela não pode revogar a família, obteve %v", repo.revoked)
+	}
+	// O vencedor continua funcionando.
+	if _, err := uc.Execute(context.Background(), dto.RefreshTokenRequest{RefreshToken: resp.RefreshToken}); err != nil {
+		t.Fatalf("token do vencedor deveria seguir válido: %v", err)
+	}
+}
+
+// Token revogado por LOGOUT reapresentado logo em seguida não é corrida:
+// a janela só vale para rotação.
+func TestRefresh_ReusoAposLogoutRevogaMesmoDentroDaJanela(t *testing.T) {
+	jwtSvc := newJWT(t)
+	userID, appID := uuid.New(), uuid.New()
+	users := &fakeUserRepo{users: map[uuid.UUID]*entity.User{userID: {ID: userID, Email: "u@x", Name: "U", Active: true}}}
+	repo := newFakeRefreshRepo()
+	uc := NewRefreshTokenUseCase(users, fakeAuthRepo{}, repo, jwtSvc)
+
+	first := issue(t, jwtSvc, repo, userID, appID)
+	if err := repo.Revoke(context.Background(), first.JTI, entity.RevokeReasonLogout); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := uc.Execute(context.Background(), dto.RefreshTokenRequest{RefreshToken: first.Token}); err != ErrInvalidRefreshToken {
+		t.Fatalf("obteve %v", err)
+	}
+	if len(repo.revoked) != 1 || repo.revoked[0] != entity.RevokeReasonReuse {
+		t.Fatalf("reuso após logout deve revogar a família, obteve %v", repo.revoked)
 	}
 }

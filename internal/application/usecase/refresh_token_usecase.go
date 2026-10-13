@@ -17,6 +17,15 @@ var (
 	ErrInvalidRefreshToken = errors.New("refresh token inválido")
 )
 
+// reuseGrace é a janela em que reapresentar um refresh token RECÉM-rotacionado
+// é tratado como corrida legítima, não como roubo. Os gateways (MeuFin,
+// CashFlowfy) renovam server-side; quando o browser volta do idle, várias
+// requisições paralelas — ou duas instâncias do mesmo gateway — podem chegar
+// com o mesmo refresh token. Só o primeiro rotaciona; os demais recebem 401
+// e reaproveitam os tokens que o primeiro gravou. Fora da janela (ou
+// rotacionado por logout), reuso continua derrubando a família inteira.
+const reuseGrace = 60 * time.Second
+
 // RefreshTokenUseCase renova o par de tokens com rotação do refresh token:
 // cada refresh token vale uma única renovação. Reapresentar um jti já
 // rotacionado (reuso) revoga todos os refresh tokens do usuário na aplicação.
@@ -61,11 +70,7 @@ func (uc *RefreshTokenUseCase) Execute(ctx context.Context, req dto.RefreshToken
 		return nil, ErrInvalidRefreshToken
 	}
 	if stored.RevokedAt != nil {
-		// Reuso: o portador deste token já o trocou (ou fez logout). Alguém
-		// tem uma cópia — derruba a família inteira.
-		n, _ := uc.refreshRepo.RevokeAllForUser(ctx, stored.UserID, stored.ApplicationID, entity.RevokeReasonReuse)
-		log.Printf("[refresh] reuso de refresh token jti=%s user_id=%s app_id=%s motivo_anterior=%q revogados=%d", jti, stored.UserID, stored.ApplicationID, stored.RevokedReason, n)
-		return nil, ErrInvalidRefreshToken
+		return nil, uc.rejectReuse(ctx, stored)
 	}
 	if !stored.Usable(uc.now()) {
 		return nil, ErrInvalidRefreshToken
@@ -127,9 +132,12 @@ func (uc *RefreshTokenUseCase) Execute(ctx context.Context, req dto.RefreshToken
 		return nil, err
 	}
 	if !rotated {
-		n, _ := uc.refreshRepo.RevokeAllForUser(ctx, stored.UserID, stored.ApplicationID, entity.RevokeReasonReuse)
-		log.Printf("[refresh] corrida/reuso na rotação jti=%s user_id=%s revogados=%d", jti, stored.UserID, n)
-		return nil, ErrInvalidRefreshToken
+		// Perdemos a corrida para outra requisição com o mesmo jti: relê o
+		// registro para decidir (janela de tolerância vs. reuso real).
+		if again, err := uc.refreshRepo.FindByID(ctx, jti); err == nil {
+			stored = again
+		}
+		return nil, uc.rejectReuse(ctx, stored)
 	}
 	if err := uc.refreshRepo.Create(ctx, &entity.RefreshToken{
 		ID: newRefresh.JTI, UserID: user.ID, ApplicationID: stored.ApplicationID,
@@ -154,6 +162,22 @@ func (uc *RefreshTokenUseCase) Execute(ctx context.Context, req dto.RefreshToken
 			Name:  user.Name,
 		},
 	}, nil
+}
+
+// rejectReuse decide o que fazer com um refresh token já revogado que foi
+// reapresentado. Rotacionado há menos de reuseGrace: corrida legítima — 401
+// sem punir. Qualquer outro caso (rotação antiga, logout): alguém tem uma
+// cópia — derruba a família inteira.
+func (uc *RefreshTokenUseCase) rejectReuse(ctx context.Context, stored *entity.RefreshToken) error {
+	if stored.RevokedAt != nil && stored.RevokedReason == entity.RevokeReasonRotated {
+		if age := uc.now().Sub(*stored.RevokedAt); age >= 0 && age <= reuseGrace {
+			log.Printf("[refresh] corrida de refresh jti=%s user_id=%s rotacionado há %s: recusado sem revogar a família", stored.ID, stored.UserID, age.Round(time.Millisecond))
+			return ErrInvalidRefreshToken
+		}
+	}
+	n, _ := uc.refreshRepo.RevokeAllForUser(ctx, stored.UserID, stored.ApplicationID, entity.RevokeReasonReuse)
+	log.Printf("[refresh] reuso de refresh token jti=%s user_id=%s app_id=%s motivo_anterior=%q revogados=%d", stored.ID, stored.UserID, stored.ApplicationID, stored.RevokedReason, n)
+	return ErrInvalidRefreshToken
 }
 
 // audience devolve o application_code carregado no `aud` do token (ou vazio).
