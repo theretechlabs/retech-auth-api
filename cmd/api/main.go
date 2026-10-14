@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -185,7 +188,7 @@ func main() {
 	passwordResetHandler := handler.NewPasswordResetHandler(passwordResetUseCase)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService)
-	syncMiddleware := middleware.NewSyncMiddleware(cfg.BootstrapSecret, cfg.HMACRequireNonce)
+	syncMiddleware := middleware.NewSyncMiddleware(cfg.BootstrapSecret)
 	corsMiddleware := middleware.NewCORSMiddleware(cfg.CORS.AllowedOrigins)
 
 	docsHandler := handler.NewDocsHandler(cfg.Docs)
@@ -195,10 +198,10 @@ func main() {
 			Prefix: "/v1",
 			Register: func(r *gin.RouterGroup) {
 				r.GET("/health", authHandler.Health)
-				r.POST("/authenticate", loginByIP.Middleware(middleware.KeyByClientIP), authHandler.Authenticate)
-				r.POST("/account/authenticate", loginByIP.Middleware(middleware.KeyByClientIP), authHandler.Authenticate) // Alias para compatibilidade
-				r.POST("/refresh", refreshByIP.Middleware(middleware.KeyByClientIP), authHandler.RefreshToken)
-				r.POST("/logout", refreshByIP.Middleware(middleware.KeyByClientIP), authHandler.Logout)
+				r.POST("/authenticate", middleware.RateLimit(loginByIP, middleware.KeyByClientIP), authHandler.Authenticate)
+				r.POST("/account/authenticate", middleware.RateLimit(loginByIP, middleware.KeyByClientIP), authHandler.Authenticate) // Alias para compatibilidade
+				r.POST("/refresh", middleware.RateLimit(refreshByIP, middleware.KeyByClientIP), authHandler.RefreshToken)
+				r.POST("/logout", middleware.RateLimit(refreshByIP, middleware.KeyByClientIP), authHandler.Logout)
 
 				protected := r.Group("")
 				protected.Use(authMiddleware.Authenticate())
@@ -221,8 +224,8 @@ func main() {
 
 				// Fluxo "esqueci a senha" — consumido por serviços internos via HMAC
 				// (quem envia o e-mail é o serviço do produto, ex.: retech-meufin-api)
-				r.POST("/password-reset/request", resetByIP.Middleware(middleware.KeyByClientIP), syncMiddleware.AuthenticateSync(), passwordResetHandler.Request)
-				r.POST("/password-reset/confirm", resetByIP.Middleware(middleware.KeyByClientIP), syncMiddleware.AuthenticateSync(), passwordResetHandler.Confirm)
+				r.POST("/password-reset/request", middleware.RateLimit(resetByIP, middleware.KeyByClientIP), syncMiddleware.AuthenticateSync(), passwordResetHandler.Request)
+				r.POST("/password-reset/confirm", middleware.RateLimit(resetByIP, middleware.KeyByClientIP), syncMiddleware.AuthenticateSync(), passwordResetHandler.Confirm)
 				protected.GET("/applications/:id", managementHandler.GetApplication)
 				protected.PUT("/applications/:id", managementHandler.UpdateApplication)
 				protected.DELETE("/applications/:id", managementHandler.DeleteApplication)
@@ -258,8 +261,12 @@ func main() {
 	// No Go, usar ":" + porta já escuta em todas as interfaces (0.0.0.0)
 	addr := fmt.Sprintf("0.0.0.0:%s", cfg.Server.Port)
 	server := &http.Server{
-		Addr:    addr,
-		Handler: http.HandlerFunc(corsHandler),
+		Addr:              addr,
+		Handler:           http.HandlerFunc(corsHandler),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	log.Printf("🚀 Servidor iniciado na porta %s (escutando em 0.0.0.0:%s)", cfg.Server.Port, cfg.Server.Port)
@@ -269,7 +276,24 @@ func main() {
 	log.Printf("📚 Documentação: http://0.0.0.0:%s/docs", cfg.Server.Port)
 	log.Printf("📚 Documentação (v1): http://0.0.0.0:%s/docs/v1", cfg.Server.Port)
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Erro ao iniciar servidor: %v", err)
+	// Graceful shutdown: SIGTERM/SIGINT (deploy no Railway) drena as conexões em
+	// vez de matar o processo — sem isso cada deploy é reportado como "crash".
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe() }()
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Erro ao iniciar servidor: %v", err)
+		}
+	case <-ctx.Done():
+		log.Println("🛑 Sinal recebido, encerrando com graça...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("⚠️ Shutdown forçado: %v", err)
+		}
+		log.Println("👋 Servidor encerrado")
 	}
 }
